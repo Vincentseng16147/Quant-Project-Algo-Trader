@@ -46,6 +46,11 @@ maindf = pd.concat(
 
 retsDF = maindf.pct_change()
 
+volumedf = pd.concat(
+    {"PG": pg["Volume"],"KO": ko["Volume"],"WMT": wmt["Volume"], 
+    "COST": cost["Volume"], "MO": mo["Volume"], "CL": cl["Volume"]}, axis = 1).sort_index()
+
+
 ############################################################################################################################
 
 #Indicator 1: momentum. 2 dataframes of 20 day moving averages subtracted by the index for both indicies.
@@ -141,9 +146,34 @@ basicZSPDF = pd.DataFrame({
 print(basicZDJDF.tail())
 print(basicZSPDF.tail())
 
-basicZSPDF[["PG","KO","WMT"]].plot(figsize=(11,5))
+#basicZDJDF[["PG","KO","WMT"]].plot(figsize=(11,5))
+#plt.axhline(0, color="black", linestyle="--", linewidth=1)
+#plt.title("Relative Z-Scores vs Dow")
+#plt.ylabel("Z-Score")
+#plt.show()
+
+# this is pretty cool and actually works, feel free to plot it I included it at the end. 
+#It's a z score, so the higher the more far off it is and needs a correction, negative means underpreforming positive is overpreforming the index
+
+################################################################################################################################################################
+
+#Indicator 4, Volume Z-Score - Take the rolling z score of the volume
+
+volumeMa = volumedf.rolling(20).mean()
+volumeSd = volumedf.rolling(20).std()
+
+volumeZ = pd.DataFrame({
+    "PG" : ((volumedf["PG"] - volumeMa["PG"])/volumeSd["PG"]),
+    "KO" : ((volumedf["KO"] - volumeMa["KO"])/volumeSd["KO"]),
+    "WMT" : ((volumedf["WMT"] - volumeMa["WMT"])/volumeSd["WMT"]),
+    "COST" : ((volumedf["COST"] - volumeMa["COST"])/volumeSd["COST"]),
+    "MO" : ((volumedf["MO"] - volumeMa["MO"])/volumeSd["MO"]),
+    "CL" : ((volumedf["CL"] - volumeMa["CL"])/volumeSd["CL"]),
+})
+print("this is volume indicator")
+print(volumeZ.tail())
+volumeZ[["PG","KO","WMT"]].plot(figsize=(11,5))
 plt.axhline(0, color="black", linestyle="--", linewidth=1)
-plt.title("Relative Z-Scores vs Dow")
+plt.title("Volume Z scores")
 plt.ylabel("Z-Score")
 plt.show()
-# this is pretty cool and actually works, feel free to plot it I included it at the end
