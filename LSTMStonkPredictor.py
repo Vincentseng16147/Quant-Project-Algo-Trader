@@ -30,18 +30,19 @@ TICKERS_CSV = "staples_tickers.csv"
 OUT_CSV = "weekly_top10_rankings.csv"
 
 # -------------------------
-# Universe (S&P 500 staples)
+# Universe (S&P 500 staples)   # make simpler. Do tickers directly when you werite, but just check that the top 30 now is similar to how it was in the past.
 # -------------------------
+#makes sure symbol is uppercase and uses '-' instead of '.' 
 def _normalize_symbol(sym: str) -> str:
     return str(sym).strip().upper().replace(".", "-")
 
 def get_staples_tickers(cache_csv: str) -> list[str]:
     if os.path.exists(cache_csv):
         t = pd.read_csv(cache_csv)["Symbol"].astype(str).tolist()
-        return sorted(list(dict.fromkeys([_normalize_symbol(x) for x in t])))
+        return sorted(list(dict.fromkeys([_normalize_symbol(x) for x in t]))) #makes a unique list by turning a list into a dictionary ( they can't have repeats) 
 
     url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-    headers = {
+    headers = { #wikipedia blocks non-browser user agents so this makes it look like a browser
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -50,8 +51,8 @@ def get_staples_tickers(cache_csv: str) -> list[str]:
         "Accept-Language": "en-US,en;q=0.9",
     }
 
-    resp = requests.get(url, headers=headers, timeout=30)
-    resp.raise_for_status()
+    resp = requests.get(url, headers=headers, timeout=30)  #this will timeout after 30 seconds if no response. It searches wikipedia for the list of S&P 500 companies
+    resp.raise_for_status() # will raise an error if the request failed
 
     # NOTE: pandas warns that passing literal HTML may be deprecated later,
     # but it's fine for now and not part of the tz-fix.
@@ -70,7 +71,7 @@ def adj_close_or_close(df: pd.DataFrame) -> pd.Series:
 # -------------------------
 def download_histories(tickers: list[str], period: str) -> dict[str, pd.DataFrame]:
     out = {}
-    for i, t in enumerate(tickers, 1):
+    for i, t in enumerate(tickers, 1): # for t in tickers with index i starting at 1
         try:
             h = yf.Ticker(t).history(period=period, auto_adjust=False).sort_index()
             if h is not None and not h.empty and "Volume" in h.columns:
@@ -79,7 +80,7 @@ def download_histories(tickers: list[str], period: str) -> dict[str, pd.DataFram
             print(f"[WARN] {t} download failed: {e}")
 
         if i % 25 == 0:
-            time.sleep(0.4)
+            time.sleep(0.4) # to avoid rate limits in the scraping
     return out
 
 # -------------------------
@@ -97,7 +98,7 @@ def build_frames(hist_by_ticker: dict[str, pd.DataFrame], bench_hist: pd.DataFra
 
     bpx = adj_close_or_close(bench_hist).rename("BENCH").sort_index()
 
-    common = px.index.intersection(bpx.index)
+    common = px.index.intersection(bpx.index)    # find dates common to both px and bpx
     px = px.loc[common]
     vol = vol.loc[common]
     bpx = bpx.loc[common]
@@ -113,12 +114,12 @@ def compute_features_long(px: pd.DataFrame, vol: pd.DataFrame, bpx: pd.Series) -
     r_sd = r.rolling(LOOKBACK).std()
     br_sd = br.rolling(LOOKBACK).std()
 
-    mom = (r_ma.sub(br_ma, axis=0)) * 100.0
-    relvol = ((r_sd.div(br_sd, axis=0)) - 1.0) * 100.0
-    z = (r_ma.sub(br_ma, axis=0)).div(r_sd, axis=0)
+    mom = (r_ma.sub(br_ma, axis=0)) * 100.0 # momentum vs benchmark
+    relvol = ((r_sd.div(br_sd, axis=0)) - 1.0) * 100.0 # relative volatility vs benchmark
+    z = (r_ma.sub(br_ma, axis=0)).div(r_sd, axis=0) # z-score vs benchmark
 
-    v_ma = vol.rolling(LOOKBACK).mean()
-    v_sd = vol.rolling(LOOKBACK).std()
+    v_ma = vol.rolling(LOOKBACK).mean() # volume moving average with z score 
+    v_sd = vol.rolling(LOOKBACK).std() # THIS IS A TEST
     vz = (vol - v_ma).div(v_sd)
 
     frames = []
@@ -142,7 +143,7 @@ def liquidity_gate(vol: pd.DataFrame) -> pd.DataFrame:
     pass_ct = meets.rolling(LIQ_DAYS).sum()
     return pass_ct >= float(LIQ_PASS)
 
-def target_excess(px: pd.DataFrame, bpx: pd.Series) -> pd.DataFrame:
+def target_excess(px: pd.DataFrame, bpx: pd.Series) -> pd.DataFrame: # 5-day excess return 
     fwd_px = px.shift(-HORIZON)
     fwd_b = bpx.shift(-HORIZON)
     r5 = (fwd_px / px) - 1.0
@@ -150,16 +151,16 @@ def target_excess(px: pd.DataFrame, bpx: pd.Series) -> pd.DataFrame:
     return r5.sub(br5, axis=0)
 
 # -------------------------
-# Sequences: (20,4) -> y
+# Sequences: (20,4) -> y   # this section builds the sequences for LSTM input. I shoudld probably comment more here and loook into it. Also specifically, this part builds the inputs of shape (20,4) for each sample, where 20 is the sequence length and 4 is the number of features. It also builds the corresponding target values y for each sequence and applies the liquidity gate to filter out samples that don't meet the liquidity criteria and ensures that only valid samples with finite values are included and returns the final arrays of input sequences X, target values y, end dates, and tickers.
 # -------------------------
 FEATURES = ["mom_vs_sp", "relvol_vs_sp", "zscore_vs_sp", "volume_z"]
 
 def build_xy(features_long: pd.DataFrame, y_df: pd.DataFrame, elig: pd.DataFrame):
     Xs, ys, end_dates, tickers = [], [], [], []
-
+    # xs is the input sequences, ys is the target values
     for t in y_df.columns:
         try:
-            f = features_long.xs(t, level="Ticker")[FEATURES].copy()
+            f = features_long.xs(t, level="Ticker")[FEATURES].copy() # give me all the rows for ticker t, only the feature columns
         except KeyError:
             continue
 
@@ -196,7 +197,7 @@ def build_xy(features_long: pd.DataFrame, y_df: pd.DataFrame, elig: pd.DataFrame
 
     return np.stack(Xs), np.array(ys, dtype=np.float32), np.array(end_dates), tickers
 
-def fit_scaler(X_train: np.ndarray):
+def fit_scaler(X_train: np.ndarray): # this fits a scaler to the training data for normalization so that each feature has mean 0 and std 1
     flat = X_train.reshape(-1, X_train.shape[-1])
     mu = flat.mean(axis=0, keepdims=True).astype(np.float32)
     sd = flat.std(axis=0, keepdims=True).astype(np.float32)
@@ -204,7 +205,7 @@ def fit_scaler(X_train: np.ndarray):
     return mu.reshape(1, 1, -1), sd.reshape(1, 1, -1)
 
 # -------------------------
-# PyTorch bits
+# PyTorch bits #this section defines the PyTorch dataset and model architecture for the LSTM regressor, as well as the training loop. The SeqDS class is a custom dataset that holds the input sequences and target values, while the LSTMReg class defines the LSTM model with a linear head for regression. The train_once function handles the training process, including loss calculation and optimization.
 # -------------------------
 class SeqDS(Dataset):
     def __init__(self, X, y):
@@ -227,7 +228,7 @@ def train_once(model, train_ld, test_ld, device):
     loss_fn = nn.MSELoss()
     model.to(device)
 
-    for ep in range(1, EPOCHS + 1):
+    for ep in range(1, EPOCHS + 1): # remember to learn more about epochs and this is a section we can optimzie 
         model.train()
         tr = []
         for Xb, yb in train_ld:
