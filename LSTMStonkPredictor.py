@@ -7,6 +7,21 @@ from torch import nn
 from torch.utils.data import Dataset, DataLoader
 import requests
 
+# adding RSI 
+# - improves excess return -.17% ->-python3 -m venv .venv
+# - improves hit rate 47.03% -> 48.65%
+def rsi(close: pd.Series, period: int = 14) -> pd.Series:
+    delta = close.diff()
+    gain = delta.clip(lower=0)
+    loss = (-delta).clip(lower=0)
+
+    avg_gain = gain.ewm(alpha=1/period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1/period, adjust=False).mean()
+
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    return 100 - (100 / (1 + rs))
+#
+
 # -------------------------
 # Config
 # -------------------------
@@ -121,15 +136,18 @@ def compute_features_long(px: pd.DataFrame, vol: pd.DataFrame, bpx: pd.Series) -
     v_ma = vol.rolling(LOOKBACK).mean() # volume moving average with z score 
     v_sd = vol.rolling(LOOKBACK).std() # THIS IS A TEST
     vz = (vol - v_ma).div(v_sd)
-
+    b_rsi = rsi(bpx, 14)
     frames = []
     for t in px.columns:
+        rsi_diff = rsi(px[t], 14) - b_rsi 
+
         df = pd.DataFrame(
             {
                 "mom_vs_sp": mom[t],
                 "relvol_vs_sp": relvol[t],
                 "zscore_vs_sp": z[t],
                 "volume_z": vz[t],
+                "rsi_diff": rsi_diff,  
                 "Ticker": t,
             }
         )
@@ -137,6 +155,8 @@ def compute_features_long(px: pd.DataFrame, vol: pd.DataFrame, bpx: pd.Series) -
 
     long = pd.concat(frames, axis=0).reset_index().rename(columns={"index": "Date"})
     return long.set_index(["Date", "Ticker"]).sort_index()
+
+
 
 def liquidity_gate(vol: pd.DataFrame) -> pd.DataFrame:
     meets = (vol >= MIN_VOL).astype(int)
@@ -153,7 +173,7 @@ def target_excess(px: pd.DataFrame, bpx: pd.Series) -> pd.DataFrame: # 5-day exc
 # -------------------------
 # Sequences: (20,4) -> y   # this section builds the sequences for LSTM input. I shoudld probably comment more here and loook into it. Also specifically, this part builds the inputs of shape (20,4) for each sample, where 20 is the sequence length and 4 is the number of features. It also builds the corresponding target values y for each sequence and applies the liquidity gate to filter out samples that don't meet the liquidity criteria and ensures that only valid samples with finite values are included and returns the final arrays of input sequences X, target values y, end dates, and tickers.
 # -------------------------
-FEATURES = ["mom_vs_sp", "relvol_vs_sp", "zscore_vs_sp", "volume_z"]
+FEATURES = ["mom_vs_sp", "relvol_vs_sp", "zscore_vs_sp", "volume_z", "rsi_diff"]
 
 def build_xy(features_long: pd.DataFrame, y_df: pd.DataFrame, elig: pd.DataFrame):
     Xs, ys, end_dates, tickers = [], [], [], []
@@ -289,10 +309,10 @@ def rank_weekly_top10(model, features_long, elig, mu, sd, dates, tickers, device
                 continue
 
             X = f.iloc[start : end + 1].values.astype(np.float32)
-            if X.shape != (SEQ, 4) or not np.all(np.isfinite(X)):
+            if X.shape != (SEQ, 5) or not np.all(np.isfinite(X)):
                 continue
 
-            X = ((X.reshape(1, SEQ, 4) - mu) / sd).astype(np.float32)
+            X = ((X.reshape(1, SEQ, 5) - mu) / sd).astype(np.float32)
             pred = model(torch.from_numpy(X).to(device)).cpu().numpy().reshape(-1)[0]
             preds.append((t, float(pred)))
 
@@ -416,7 +436,7 @@ def main():
     train_ld = DataLoader(SeqDS(Xtr, ytr), batch_size=BATCH, shuffle=True)
     test_ld = DataLoader(SeqDS(Xte, yte), batch_size=BATCH, shuffle=False)
 
-    model = LSTMReg(input_size=4, hidden=HIDDEN)
+    model = LSTMReg(input_size=5, hidden=HIDDEN)
     train_once(model, train_ld, test_ld, device)
 
     rdates = weekly_dates(px.index)
